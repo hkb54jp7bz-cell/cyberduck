@@ -1065,6 +1065,9 @@ public class MainController extends BundleController implements NSApplication.De
     @Override
     public NSUInteger applicationShouldTerminate(final NSApplication app) {
         log.debug("Application should quit with notification");
+        if(terminationPending) {
+            return NSApplication.NSTerminateLater;
+        }
         // Determine if there are any running transfers
         final NSUInteger result = TransferControllerFactory.applicationShouldTerminate(app);
         if(!result.equals(NSApplication.NSTerminateNow)) {
@@ -1111,16 +1114,43 @@ public class MainController extends BundleController implements NSApplication.De
                         return NSApplication.NSTerminateLater;
                     }
                     if(choice == SheetCallback.DEFAULT_OPTION) {
-                        // Quit immediatly
-                        return NSApplication.NSTerminateNow;
+                        return this.terminateAfterDisconnectingBrowsers(app);
                     }
-                }
-                else {
-                    browser.windowShouldClose(browser.window());
                 }
             }
         }
-        return NSApplication.NSTerminateNow;
+        return this.terminateAfterDisconnectingBrowsers(app);
+    }
+
+    private boolean terminationPending;
+
+    /**
+     * Keep the event loop running until all browser disconnect callbacks have completed.
+     */
+    private NSUInteger terminateAfterDisconnectingBrowsers(final NSApplication app) {
+        final List<BrowserController> mounted = new ArrayList<>();
+        for(BrowserController browser : MainController.getBrowsers()) {
+            if(browser.isMounted()) {
+                mounted.add(browser);
+            }
+        }
+        if(mounted.isEmpty()) {
+            return NSApplication.NSTerminateNow;
+        }
+        terminationPending = true;
+        final java.util.concurrent.atomic.AtomicInteger remaining
+                = new java.util.concurrent.atomic.AtomicInteger(mounted.size());
+        for(BrowserController browser : mounted) {
+            // Quit was already accepted; do not show a second disconnect confirmation.
+            browser.doUnmount(() -> {
+                browser.window().close();
+                if(remaining.decrementAndGet() == 0) {
+                    terminationPending = false;
+                    app.replyToApplicationShouldTerminate(true);
+                }
+            });
+        }
+        return NSApplication.NSTerminateLater;
     }
 
     /**
